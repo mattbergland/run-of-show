@@ -98,7 +98,8 @@ jobs:
         run: |
           brew install chargepoint/xcparse/xcparse || brew install xcparse
           mkdir -p docs/screenshots
-          xcparse screenshots --os --device --test TestResults.xcresult docs/screenshots || true
+          # xcparse 2.3.x: --test pulls test attachments; --device is NOT a valid flag.
+          xcparse screenshots --test TestResults.xcresult docs/screenshots || true
           # Normalize to the stable filenames the README expects.
           python3 - <<'PY'
           import os, glob, shutil
