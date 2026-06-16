@@ -21,7 +21,7 @@ public struct ClaudeProvider: AIProvider {
         public init(
             apiKey: String,
             model: String = ClaudeProvider.defaultModel,
-            maxTokens: Int = 4096,
+            maxTokens: Int = ClaudeProvider.defaultMaxTokens,
             endpoint: URL = URL(string: "https://api.anthropic.com/v1/messages")!
         ) {
             self.apiKey = apiKey
@@ -35,10 +35,24 @@ public struct ClaudeProvider: AIProvider {
     public static let defaultModel = "claude-sonnet-4-6"
     public static let apiKeyEnvVar = "ANTHROPIC_API_KEY"
 
+    /// A full 8-section plan does not fit in 4096 output tokens — the response
+    /// comes back truncated (`stop_reason == "max_tokens"`). 8192 leaves
+    /// comfortable headroom for the complete document.
+    public static let defaultMaxTokens = 8192
+
+    /// A complete plan takes ~2 minutes to generate, well past `URLSession.shared`'s
+    /// 60s default. This session allows up to 5 minutes per request.
+    public static let defaultSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 300
+        configuration.timeoutIntervalForResource = 300
+        return URLSession(configuration: configuration)
+    }()
+
     private let configuration: Configuration
     private let session: URLSession
 
-    public init(configuration: Configuration, session: URLSession = .shared) {
+    public init(configuration: Configuration, session: URLSession = ClaudeProvider.defaultSession) {
         self.configuration = configuration
         self.session = session
     }
@@ -49,7 +63,7 @@ public struct ClaudeProvider: AIProvider {
     public init?(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         model: String = ClaudeProvider.defaultModel,
-        session: URLSession = .shared
+        session: URLSession = ClaudeProvider.defaultSession
     ) {
         guard let key = environment[ClaudeProvider.apiKeyEnvVar], !key.isEmpty else {
             return nil
@@ -79,11 +93,27 @@ public struct ClaudeProvider: AIProvider {
             throw AIProviderError.httpError(status: http.statusCode, body: bodyText)
         }
 
+        return try Self.decodePlan(fromResponseData: data)
+    }
+
+    /// Decodes a `RunOfShowPlan` from a raw Anthropic Messages response body.
+    ///
+    /// Pure and network-free so the truncation/parse paths can be unit-tested on
+    /// Linux. Surfaces a clear error when the model ran out of output tokens
+    /// (`stop_reason == "max_tokens"`) rather than a confusing JSON parse failure.
+    static func decodePlan(fromResponseData data: Data) throws -> RunOfShowPlan {
         let decoded: MessagesResponse
         do {
             decoded = try JSONDecoder().decode(MessagesResponse.self, from: data)
         } catch {
             throw AIProviderError.parsingFailed("Unexpected Anthropic response envelope: \(error)")
+        }
+
+        if decoded.stopReason == "max_tokens" {
+            throw AIProviderError.parsingFailed(
+                "The model's response was cut off before the full plan was returned "
+                + "(stop_reason=max_tokens). Increase Configuration.maxTokens and try again."
+            )
         }
 
         let text = decoded.content.compactMap { $0.text }.joined()
@@ -140,6 +170,12 @@ extension ClaudeProvider {
 
     struct MessagesResponse: Decodable {
         let content: [ContentBlock]
+        let stopReason: String?
+
+        enum CodingKeys: String, CodingKey {
+            case content
+            case stopReason = "stop_reason"
+        }
 
         struct ContentBlock: Decodable {
             let type: String

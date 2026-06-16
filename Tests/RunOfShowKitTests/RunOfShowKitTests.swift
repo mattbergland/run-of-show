@@ -212,4 +212,44 @@ final class RunOfShowKitTests: XCTestCase {
     func testClaudeProviderUsesCurrentModel() {
         XCTAssertEqual(ClaudeProvider.defaultModel, "claude-sonnet-4-6")
     }
+
+    func testClaudeDefaultsLeaveHeadroomForFullPlan() {
+        // 4096 truncates the 8-section plan; the default must leave headroom.
+        XCTAssertEqual(ClaudeProvider.defaultMaxTokens, 8192)
+        XCTAssertEqual(ClaudeProvider.Configuration(apiKey: "k").maxTokens, 8192)
+    }
+
+    func testClaudeDefaultSessionHasGenerousTimeouts() {
+        // A full plan takes ~2 min; the 60s URLSession.shared default times out.
+        let config = ClaudeProvider.defaultSession.configuration
+        XCTAssertGreaterThanOrEqual(config.timeoutIntervalForRequest, 180)
+        XCTAssertGreaterThanOrEqual(config.timeoutIntervalForResource, 180)
+    }
+
+    func testClaudeDecodeTruncatedResponseThrowsClearError() throws {
+        let envelope: [String: Any] = [
+            "content": [["type": "text", "text": "{\"eventTitle\":\"AI Founder Dinner"]],
+            "stop_reason": "max_tokens"
+        ]
+        let data = try JSONSerialization.data(withJSONObject: envelope)
+        XCTAssertThrowsError(try ClaudeProvider.decodePlan(fromResponseData: data)) { error in
+            guard case let AIProviderError.parsingFailed(message) = error else {
+                return XCTFail("Expected parsingFailed, got \(error)")
+            }
+            XCTAssertTrue(message.contains("max_tokens"), "Error should explain truncation: \(message)")
+        }
+    }
+
+    func testClaudeDecodeFullPlanResponseSucceeds() throws {
+        let plan = MockProvider.plan(for: PlanRequest(rawInput: "AI founder dinner for 30 people in SF."))
+        let planText = String(data: try JSONEncoder().encode(plan), encoding: .utf8)!
+        let envelope: [String: Any] = [
+            "content": [["type": "text", "text": planText]],
+            "stop_reason": "end_turn"
+        ]
+        let data = try JSONSerialization.data(withJSONObject: envelope)
+        let decoded = try ClaudeProvider.decodePlan(fromResponseData: data)
+        XCTAssertTrue(decoded.isComplete, "Decoded plan should contain every section")
+        XCTAssertEqual(decoded.eventTitle, plan.eventTitle)
+    }
 }
