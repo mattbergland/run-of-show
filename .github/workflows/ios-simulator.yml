@@ -44,7 +44,7 @@ jobs:
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: "16.2"
+          xcode-version: latest-stable
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -52,19 +52,36 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Pick a simulator
+      - name: Pick a booted-capable simulator
         id: sim
         run: |
-          # Choose a currently-installed iPhone simulator on the runner.
-          DEVICE=$(xcrun simctl list devices available | grep -Eo 'iPhone 16( Pro)?' | head -1)
-          if [ -z "$DEVICE" ]; then
-            DEVICE=$(xcrun simctl list devices available | grep -Eo 'iPhone 15( Pro)?' | head -1)
-          fi
-          if [ -z "$DEVICE" ]; then
-            DEVICE="iPhone 16"
-          fi
-          echo "Using simulator: $DEVICE"
-          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+          # Select an *available* iPhone simulator UDID (guaranteed to have an
+          # installed runtime), preferring newer models. Using the UDID avoids
+          # the "OS:latest" resolver picking a runtime that isn't installed.
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          best = None
+          for runtime, devices in data.items():
+              if "iOS" not in runtime:
+                  continue
+              for dev in devices:
+                  if not dev.get("isAvailable"):
+                      continue
+                  name = dev["name"]
+                  if not name.startswith("iPhone"):
+                      continue
+                  # Prefer higher iOS runtime, then "Pro"/higher model numbers.
+                  score = (runtime, "Pro" in name, name)
+                  if best is None or score > best[0]:
+                      best = (score, dev["udid"], name, runtime)
+          if best is None:
+              sys.exit("No available iPhone simulator found")
+          print(best[1])
+          sys.stderr.write(f"Using {best[2]} on {best[3]} ({best[1]})\n")
+          ')
+          echo "Picked simulator UDID: $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
       - name: Build & run UI tests (mock mode)
         run: |
@@ -72,11 +89,9 @@ jobs:
           xcodebuild test \
             -project RunOfShow.xcodeproj \
             -scheme RunOfShow \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -resultBundlePath TestResults.xcresult \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO | xcpretty || true
-          # Fail the job if the result bundle was not produced.
-          test -d TestResults.xcresult
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | tee xcodebuild.log
 
       - name: Extract screenshots from result bundle
         if: always()
@@ -84,26 +99,42 @@ jobs:
           brew install chargepoint/xcparse/xcparse || brew install xcparse
           mkdir -p docs/screenshots
           xcparse screenshots --os --device --test TestResults.xcresult docs/screenshots || true
-          # Normalize to stable filenames the README expects.
+          # Normalize to the stable filenames the README expects.
           python3 - <<'PY'
           import os, glob, shutil
           root = "docs/screenshots"
           mapping = {"01-input-screen": "input-screen.png", "02-results-screen": "results-screen.png"}
-          for path in glob.glob(os.path.join(root, "**", "*.png"), recursive=True):
+          pngs = sorted(
+              p for p in glob.glob(os.path.join(root, "**", "*.png"), recursive=True)
+              if os.path.basename(p) not in mapping.values()
+          )
+          matched = set()
+          for path in pngs:
               base = os.path.basename(path)
               for key, dest in mapping.items():
                   if key in base:
                       shutil.copy(path, os.path.join(root, dest))
-          print(os.listdir(root))
+                      matched.add(dest)
+          # Fallback: if attachment names didn't match, assign by sorted order.
+          remaining = [d for d in ("input-screen.png", "results-screen.png") if d not in matched]
+          for dest, path in zip(remaining, pngs):
+              shutil.copy(path, os.path.join(root, dest))
+          print("docs/screenshots:", sorted(os.listdir(root)))
           PY
           ls -R docs/screenshots || true
+
+      - name: Verify screenshots were captured
+        run: |
+          test -f docs/screenshots/input-screen.png
+          test -f docs/screenshots/results-screen.png
+          echo "Both screenshots present."
 
       - name: Upload screenshots artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: simulator-screenshots
-          path: docs/screenshots/**/*.png
+          path: docs/screenshots/*.png
           if-no-files-found: warn
 
       - name: Upload result bundle
