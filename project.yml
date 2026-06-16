@@ -1,0 +1,62 @@
+name: RunOfShow
+options:
+  bundleIdPrefix: land.mattberg.runofshow
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+packages:
+  RunOfShowKit:
+    path: .
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  RunOfShow:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: App/RunOfShow
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: land.mattberg.runofshow
+        INFOPLIST_FILE: App/RunOfShow/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_PREVIEWS: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+    dependencies:
+      - package: RunOfShowKit
+        product: RunOfShowKit
+
+  RunOfShowUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: AppUITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: land.mattberg.runofshow.uitests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: RunOfShow
+
+schemes:
+  RunOfShow:
+    build:
+      targets:
+        RunOfShow: all
+        RunOfShowUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - RunOfShowUITests
